@@ -7,9 +7,10 @@ const API = process.env.VITE_API_PROXY ?? 'http://127.0.0.1:8000'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: { chunkSizeWarningLimit: 1000 },
   server: {
     port: 5180,
     strictPort: true,
-    proxy: { '/api': API, '/static': API },
+    proxy: { '/api': API },
   },
 })

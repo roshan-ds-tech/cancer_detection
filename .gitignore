@@ -2,10 +2,8 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-.ipynb_checkpoints/
 node_modules/
 frontend/dist/
-frontend/e2e/screenshots/
 .DS_Store
-# generated candidate models (re-created by training); final model + manifest are kept
-backend/artifacts/candidates/
+# created automatically when the models are trained
+backend/saved/
