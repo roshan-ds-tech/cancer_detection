@@ -1,14 +1,17 @@
 """FastAPI server for the Breast Cancer Prediction project.
 
-Run with:  uvicorn main:app --port 8000
+Run with:  uvicorn main:app --port 8000      (API docs at http://localhost:8000/docs)
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-import model as ml
+import data
+import predictor
+import training
 
-app = FastAPI(title="Breast Cancer Prediction API")
+app = FastAPI(title="OncoSense AI – Breast Cancer Prediction API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5180", "http://127.0.0.1:5180"],
@@ -16,45 +19,99 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load the best model once when the server starts (it is trained the first time).
-best_model, results = ml.load_model()
+# Load the best model once when the server starts (it is trained automatically the first time).
+state = {}
+state["model"], state["results"] = training.load_model()
 
 
-class PatientValues(BaseModel):
-    """The 10 measurements entered in the form. All must be numbers >= 0."""
-    radius: float = Field(ge=0)
-    texture: float = Field(ge=0)
-    perimeter: float = Field(ge=0)
-    area: float = Field(ge=0)
-    smoothness: float = Field(ge=0)
-    compactness: float = Field(ge=0)
-    concavity: float = Field(ge=0)
-    concave_points: float = Field(ge=0)
-    symmetry: float = Field(ge=0)
-    fractal_dimension: float = Field(ge=0)
+class Measurements(BaseModel):
+    """The 10 cell measurements. Every value must be a number >= 0."""
+    radius: float = Field(ge=0, allow_inf_nan=False)
+    texture: float = Field(ge=0, allow_inf_nan=False)
+    perimeter: float = Field(ge=0, allow_inf_nan=False)
+    area: float = Field(ge=0, allow_inf_nan=False)
+    smoothness: float = Field(ge=0, allow_inf_nan=False)
+    compactness: float = Field(ge=0, allow_inf_nan=False)
+    concavity: float = Field(ge=0, allow_inf_nan=False)
+    concave_points: float = Field(ge=0, allow_inf_nan=False)
+    symmetry: float = Field(ge=0, allow_inf_nan=False)
+    fractal_dimension: float = Field(ge=0, allow_inf_nan=False)
 
 
-@app.get("/api/dataset")
-def get_dataset():
-    return ml.dataset_summary()
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "best_model": state["results"]["best_model"],
+            "trained_at": state["results"]["trained_at"]}
 
 
-@app.get("/api/results")
-def get_results():
-    return results
+# ---------- dataset ----------
+@app.get("/api/dataset/summary")
+def dataset_summary():
+    return data.summary()
 
 
-@app.post("/api/train")
-def train():
-    """Run all models on the dataset again and use the new best model."""
-    global best_model, results
-    ml.train_models()
-    best_model, results = ml.load_model()
-    return results
+@app.get("/api/dataset/eda")
+def dataset_eda():
+    return data.eda()
 
 
+@app.get("/api/dataset/records")
+def dataset_records(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0)):
+    return data.records(limit, offset)
+
+
+# ---------- models ----------
+@app.get("/api/models/results")
+def model_results():
+    return state["results"]
+
+
+@app.post("/api/models/train")
+def run_training():
+    """Train and compare all models again, then use the new best model."""
+    training.train_models()
+    state["model"], state["results"] = training.load_model()
+    return state["results"]
+
+
+@app.get("/api/models/history")
+def model_history():
+    return training.load_history()
+
+
+# ---------- predictions ----------
 @app.post("/api/predict")
-def predict(values: PatientValues):
-    output = ml.predict(best_model, values.model_dump())
-    output["model"] = results["best_model"]
-    return output
+def predict(values: Measurements):
+    return {**predictor.predict_one(state["model"], values.model_dump()),
+            "model": state["results"]["best_model"]}
+
+
+@app.get("/api/samples")
+def samples():
+    return predictor.test_samples()
+
+
+@app.post("/api/predict/sample/{sample_id}")
+def predict_sample(sample_id: int):
+    result = predictor.predict_test_sample(state["model"], sample_id)
+    if result is None:
+        raise HTTPException(404, "This sample is not in the test set.")
+    return {**result, "model": state["results"]["best_model"]}
+
+
+@app.post("/api/predict/batch")
+async def predict_batch(file: UploadFile = File(...)):
+    if not (file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(415, "Please upload a .csv file.")
+    content = await file.read(predictor.MAX_CSV_BYTES + 1)
+    try:
+        result = predictor.predict_csv(state["model"], content)
+    except predictor.CSVError as e:
+        raise HTTPException(422, str(e))
+    return {**result, "model": state["results"]["best_model"]}
+
+
+@app.get("/api/predict/template.csv", response_class=PlainTextResponse)
+def csv_template():
+    return PlainTextResponse(predictor.template_csv(), media_type="text/csv",
+                             headers={"Content-Disposition": "attachment; filename=template.csv"})
